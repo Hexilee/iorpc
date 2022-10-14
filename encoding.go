@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"io"
+	"os"
 )
 
 // RegisterType registers the given type to send via rpc.
@@ -222,17 +223,16 @@ func (d *messageDecoder) DecodeRequest(req *wireRequest) error {
 	}
 
 	if req.Size > 0 {
-		buf := bufferPool.Get().(*Buffer)
-		bytes, err := buf.ReadFrom(io.LimitReader(d.r, int64(req.Size)))
+		body, writer, err := os.Pipe()
+		if err != nil {
+			return err
+		}
+		bytes, err := io.Copy(writer, io.LimitReader(d.r, int64(req.Size)))
 		if err != nil {
 			return err
 		}
 		d.stat.addBodyRead(uint64(bytes))
-		if d.closeBody {
-			buf.Close()
-		} else {
-			req.Body = buf
-		}
+		req.Body = body
 	}
 	d.stat.incReadCalls()
 	return nil
@@ -273,17 +273,16 @@ func (d *messageDecoder) DecodeResponse(resp *wireResponse) error {
 	}
 
 	if resp.Size > 0 {
-		buf := bufferPool.Get().(*Buffer)
-		bytes, err := buf.ReadFrom(io.LimitReader(d.r, int64(resp.Size)))
+		body, writer, err := os.Pipe()
+		if err != nil {
+			return err
+		}
+		bytes, err := io.Copy(writer, io.LimitReader(d.r, int64(resp.Size)))
 		if err != nil {
 			return err
 		}
 		d.stat.addBodyRead(uint64(bytes))
-		if d.closeBody {
-			buf.Close()
-		} else {
-			resp.Body = buf
-		}
+		resp.Body = body
 	}
 	d.stat.incReadCalls()
 	return nil
