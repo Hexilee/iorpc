@@ -227,6 +227,7 @@ func (d *messageDecoder) DecodeRequest(req *wireRequest) error {
 		if err != nil {
 			return err
 		}
+		defer writer.Close()
 		bytes, err := io.Copy(writer, io.LimitReader(d.r, int64(req.Size)))
 		if err != nil {
 			return err
@@ -277,6 +278,7 @@ func (d *messageDecoder) DecodeResponse(resp *wireResponse) error {
 		if err != nil {
 			return err
 		}
+		defer writer.Close()
 		bytes, err := io.Copy(writer, io.LimitReader(d.r, int64(resp.Size)))
 		if err != nil {
 			return err
