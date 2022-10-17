@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"io"
-	"os"
 )
 
 // RegisterType registers the given type to send via rpc.
@@ -223,17 +222,23 @@ func (d *messageDecoder) DecodeRequest(req *wireRequest) error {
 	}
 
 	if req.Size > 0 {
-		body, writer, err := os.Pipe()
-		if err != nil {
-			return err
+		var err error
+		var writer io.WriteCloser
+		if req.Body, writer, err = Pipe(uintptr(req.Size)); err == nil {
+			defer writer.Close()
+		} else {
+			buf := bufferPool.Get().(*Buffer)
+			req.Body, writer = buf, buf
 		}
-		defer writer.Close()
 		bytes, err := io.Copy(writer, io.LimitReader(d.r, int64(req.Size)))
 		if err != nil {
 			return err
 		}
+		if d.closeBody {
+			req.Body.Close()
+			req.Body = nil
+		}
 		d.stat.addBodyRead(uint64(bytes))
-		req.Body = body
 	}
 	d.stat.incReadCalls()
 	return nil
@@ -274,17 +279,23 @@ func (d *messageDecoder) DecodeResponse(resp *wireResponse) error {
 	}
 
 	if resp.Size > 0 {
-		body, writer, err := os.Pipe()
-		if err != nil {
-			return err
+		var err error
+		var writer io.WriteCloser
+		if resp.Body, writer, err = Pipe(uintptr(resp.Size)); err == nil {
+			defer writer.Close()
+		} else {
+			buf := bufferPool.Get().(*Buffer)
+			resp.Body, writer = buf, buf
 		}
-		defer writer.Close()
 		bytes, err := io.Copy(writer, io.LimitReader(d.r, int64(resp.Size)))
 		if err != nil {
 			return err
 		}
+		if d.closeBody {
+			resp.Body.Close()
+			resp.Body = nil
+		}
 		d.stat.addBodyRead(uint64(bytes))
-		resp.Body = body
 	}
 	d.stat.incReadCalls()
 	return nil
