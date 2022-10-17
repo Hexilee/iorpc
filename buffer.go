@@ -13,6 +13,10 @@ var bufferPool = sync.Pool{
 	},
 }
 
+func GetBuffer() *Buffer {
+	return bufferPool.Get().(*Buffer)
+}
+
 type Buffer struct {
 	*bytes.Buffer
 }

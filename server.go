@@ -11,14 +11,14 @@ import (
 
 type Request struct {
 	Service Service
+	Headers *Buffer
 	Size    uint64
-	Headers map[string]any
 	Body    io.ReadCloser
 }
 
 type Response struct {
+	Headers *Buffer
 	Size    uint64
-	Headers map[string]any
 	Body    io.ReadCloser
 }
 

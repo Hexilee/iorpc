@@ -251,6 +251,7 @@ var zeroTime time.Time
 
 func releaseAsyncResult(m *AsyncResult) {
 	m.Response.Size = 0
+	m.Response.Headers = nil
 	m.Response.Body = nil
 	m.Error = nil
 	m.Done = nil
