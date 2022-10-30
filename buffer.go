@@ -22,3 +22,7 @@ func (b *Buffer) Close() error {
 	bufferPool.Put(b)
 	return nil
 }
+
+func (b *Buffer) Iovec() [][]byte {
+	return [][]byte{b.Bytes()}
+}

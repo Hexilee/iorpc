@@ -5,6 +5,8 @@ import (
 	"log"
 	"syscall"
 	"unsafe"
+
+	"github.com/pkg/errors"
 )
 
 func vmsplice(fd int, iovs []syscall.Iovec, flags int) (int, error) {
@@ -48,6 +50,31 @@ func (p *Pair) LoadBuffer(buffer [][]byte, sz int, flags int) (int, error) {
 		iovec = append(iovec, syscall.Iovec{Base: &b[0], Len: uint64(len(b))})
 	}
 	return vmsplice(p.w, iovec, flags)
+}
+
+func (p *Pair) LoadConn(r syscall.Conn, size int) (int, error) {
+	rawConn, err := r.SyscallConn()
+	if err != nil {
+		return 0, errors.Wrap(err, "get raw conn")
+	}
+
+	loaded := 0
+	var loadError error
+
+	err = rawConn.Read(func(fd uintptr) (done bool) {
+		var n int
+		n, loadError = p.LoadFrom(fd, size-loaded, SPLICE_F_NONBLOCK|SPLICE_F_MOVE)
+		if loadError != nil {
+			return loadError != syscall.EAGAIN && loadError != syscall.EINTR
+		}
+		loaded += n
+		return loaded == size
+	})
+
+	if err == nil {
+		err = loadError
+	}
+	return loaded, err
 }
 
 func (p *Pair) WriteTo(fd uintptr, n int, flags int) (int, error) {

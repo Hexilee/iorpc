@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"io"
 	"reflect"
+	"syscall"
 
+	"github.com/hexilee/iorpc/splice"
 	"github.com/pkg/errors"
 )
 
@@ -65,34 +67,126 @@ type wireResponse struct {
 }
 
 type messageEncoder struct {
-	w            io.Writer
-	headerBuffer *Buffer
-	stat         *ConnStats
+	w               io.Writer
+	startLineBuffer *Buffer
+	headerBuffer    *Buffer
+	stat            *ConnStats
 }
 
 func (e *messageEncoder) Close() error {
-	// if e.zw != nil {
-	// 	return e.zw.Close()
-	// }
+	if err := e.startLineBuffer.Close(); err != nil {
+		return err
+	}
 	return e.headerBuffer.Close()
 }
 
 func (e *messageEncoder) Flush() error {
-	// if e.zw != nil {
-	// 	if err := e.ww.Flush(); err != nil {
-	// 		return err
-	// 	}
-	// 	if err := e.zw.Flush(); err != nil {
-	// 		return err
-	// 	}
-	// }
-	// if err := e.bw.Flush(); err != nil {
-	// 	return err
-	// }
 	return nil
 }
 
+func (e *messageEncoder) splice(body *Body) (bool, error) {
+	syscallConn, ok := e.w.(syscall.Conn)
+	if !ok {
+		// fallback to io.Copy
+		return false, nil
+	}
+
+	rawConn, err := syscallConn.SyscallConn()
+	if err != nil {
+		// fallback to io.Copy
+		return false, nil
+	}
+
+	pair, err := splice.Get()
+	if err != nil {
+		// fallback to io.Copy
+		return false, nil
+	}
+	defer pair.Close()
+
+	size := uint64(e.startLineBuffer.Len() + e.headerBuffer.Len() + int(body.Size))
+	err = pair.Grow(alignSize(int(size)))
+	if err != nil {
+		// fallback to io.Copy
+		return false, nil
+	}
+
+	_, err = syscall.Write(int(pair.WriteFd()), e.startLineBuffer.Bytes())
+	if err != nil {
+		// fallback to io.Copy
+		return false, nil
+	}
+
+	if e.headerBuffer.Len() > 0 {
+		_, err = syscall.Write(int(pair.WriteFd()), e.headerBuffer.Bytes())
+		if err != nil {
+			// fallback to io.Copy
+			return false, nil
+		}
+	}
+
+	if body.Size != 0 && body.Reader != nil {
+		switch reader := body.Reader.(type) {
+		case IsPipe:
+			_, err = pair.LoadFrom(reader.ReadFd(), int(body.Size), splice.SPLICE_F_MOVE)
+		case IsFile:
+			_, err = pair.LoadFrom(reader.File().Fd(), int(body.Size), splice.SPLICE_F_MOVE)
+		case IsConn:
+			_, err = pair.LoadConn(reader, int(body.Size))
+		case IsBuffer:
+			_, err = pair.LoadBuffer(reader.Iovec(), int(body.Size), splice.SPLICE_F_GIFT)
+		default:
+			// fallback to io.Copy
+			return false, nil
+		}
+
+		body.Close()
+		if err != nil {
+			return false, err
+		}
+	}
+
+	written := uint64(0)
+	var writeError error
+	err = rawConn.Write(func(fd uintptr) (done bool) {
+		var n int
+		n, writeError = pair.WriteTo(fd, int(size-written), splice.SPLICE_F_NONBLOCK|splice.SPLICE_F_MOVE)
+		if writeError != nil {
+			return writeError != syscall.EAGAIN && writeError != syscall.EINTR
+		}
+		written += uint64(n)
+		return written == size
+	})
+	if err == nil {
+		err = writeError
+	}
+	if err != nil {
+		return false, err
+	}
+
+	e.stat.addHeadWritten(uint64(e.startLineBuffer.Len() + e.headerBuffer.Len()))
+	e.stat.addBodyWritten(body.Size)
+	return true, nil
+}
+
 func (e *messageEncoder) encode(body *Body) error {
+	spliced, err := e.splice(body)
+	if err != nil {
+		e.stat.incWriteErrors()
+		return err
+	}
+	if spliced {
+		e.stat.incWriteCalls()
+		return nil
+	}
+
+	n, err := e.w.Write(e.startLineBuffer.Bytes())
+	if err != nil {
+		e.stat.incWriteErrors()
+		return err
+	}
+	e.stat.addHeadWritten(uint64(n))
+
 	if e.headerBuffer.Len() > 0 {
 		n, err := e.w.Write(e.headerBuffer.Bytes())
 		if err != nil {
@@ -104,18 +198,6 @@ func (e *messageEncoder) encode(body *Body) error {
 
 	if body.Size != 0 && body.Reader != nil {
 		defer body.Close()
-		spliced, err := body.spliceTo(e.w)
-		if err != nil {
-			// TODO: deal with error
-			err = nil
-		}
-		if spliced {
-			e.stat.addBodyWritten(body.Size)
-			e.stat.incWriteCalls()
-			return nil
-		}
-
-		// fallback to io.Copy when not spliced
 		nc, err := io.CopyN(e.w, body.Reader, int64(body.Size))
 		if err != nil {
 			e.stat.incWriteErrors()
@@ -138,7 +220,8 @@ func (e *messageEncoder) EncodeRequest(req wireRequest) error {
 		}
 	}
 
-	if err := binary.Write(e.w, binary.BigEndian, requestStartLine{
+	e.startLineBuffer.Reset()
+	if err := binary.Write(e.startLineBuffer, binary.BigEndian, requestStartLine{
 		ID:         req.ID,
 		Service:    req.Service,
 		HeaderType: headerIndex,
@@ -165,7 +248,8 @@ func (e *messageEncoder) EncodeResponse(resp wireResponse) error {
 
 	respErr := []byte(resp.Error)
 
-	if err := binary.Write(e.w, binary.BigEndian, responseStartLine{
+	e.startLineBuffer.Reset()
+	if err := binary.Write(e.startLineBuffer, binary.BigEndian, responseStartLine{
 		ID:         resp.ID,
 		ErrorSize:  uint32(len(respErr)),
 		HeaderType: headerIndex,
@@ -192,9 +276,10 @@ func (e *messageEncoder) EncodeResponse(resp wireResponse) error {
 
 func newMessageEncoder(w io.Writer, s *ConnStats) *messageEncoder {
 	return &messageEncoder{
-		w:            w,
-		headerBuffer: bufferPool.Get().(*Buffer),
-		stat:         s,
+		w:               w,
+		startLineBuffer: bufferPool.Get().(*Buffer),
+		headerBuffer:    bufferPool.Get().(*Buffer),
+		stat:            s,
 	}
 }
 
