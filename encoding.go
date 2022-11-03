@@ -8,12 +8,15 @@ import (
 	"github.com/pkg/errors"
 )
 
+func init() {
+	RegisterHeaders(func() Headers { return NoopHeaders{} })
+}
+
 var (
 	requestStartLineSize  = binary.Size(requestStartLine{})
 	responseStartLineSize = binary.Size(responseStartLine{})
 
-	// headersConstructors[0] should be nil
-	headersConstructors = make([]func() Headers, 1)
+	headersConstructors = make([]func() Headers, 0)
 	headersIndexes      = make(map[reflect.Type]uint32)
 )
 
@@ -36,6 +39,16 @@ func indexHeaders(h Headers) uint32 {
 		return 0
 	}
 	return headersIndexes[reflect.TypeOf(h)]
+}
+
+type NoopHeaders struct{}
+
+func (NoopHeaders) Encode(io.Writer) error {
+	return nil
+}
+
+func (NoopHeaders) Decode([]byte) error {
+	return nil
 }
 
 type requestStartLine struct {

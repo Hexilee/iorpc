@@ -153,7 +153,7 @@ func NewTCPClient(addr string) *Client {
 // The returned server must be started after optional settings' adjustment.
 //
 // The corresponding client must be created with NewTCPClient().
-func NewTCPServer(addr string, handler HandlerFunc) *Server {
+func NewTCPServer(addr string, handler Handler) *Server {
 	return &Server{
 		Addr:     addr,
 		Handler:  handler,
@@ -189,7 +189,7 @@ func NewUnixClient(addr string) *Client {
 // The returned server must be started after optional settings' adjustment.
 //
 // The corresponding client must be created with NewUnixClient().
-func NewUnixServer(addr string, handler HandlerFunc) *Server {
+func NewUnixServer(addr string, handler Handler) *Server {
 	return &Server{
 		Addr:    addr,
 		Handler: handler,

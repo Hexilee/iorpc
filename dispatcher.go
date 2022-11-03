@@ -3,22 +3,41 @@ package iorpc
 import "errors"
 
 var ErrUnknownService = errors.New("unknown service")
+var ErrInvalidHeadersType = errors.New("invalid headers type")
 
 type Service uint32
 
+type GenericRequest[T Headers] struct {
+	Addr    string
+	Service Service
+	Headers T
+	Body    Body
+}
+
+type GenericResponse[T Headers] struct {
+	Headers T
+	Body    Body
+}
+
+type GenericHandler[T, U Headers] func(request GenericRequest[T]) (response *GenericResponse[U], err error)
+
 type Dispatcher struct {
-	services       []HandlerFunc
+	services       []Handler
 	serviceNameMap map[string]Service
 }
 
 func NewDispatcher() *Dispatcher {
 	return &Dispatcher{
-		services:       make([]HandlerFunc, 0),
+		services:       make([]Handler, 0),
 		serviceNameMap: make(map[string]Service),
 	}
 }
 
-func (d *Dispatcher) AddService(name string, handler HandlerFunc) (srv Service, conflict bool) {
+func (d *Dispatcher) AddServiceFunc(name string, handler HandlerFunc) (srv Service, conflict bool) {
+	return d.AddService(name, handler)
+}
+
+func (d *Dispatcher) AddService(name string, handler Handler) (srv Service, conflict bool) {
 	if _, conflict = d.serviceNameMap[name]; conflict {
 		return 0, conflict
 	}
@@ -42,12 +61,30 @@ func (d *Dispatcher) MustGetService(name string) Service {
 	return svc
 }
 
-func (d *Dispatcher) HandlerFunc() HandlerFunc {
-	return func(clientAddr string, request Request) (response *Response, err error) {
-		service := request.Service
-		if int(service) >= len(d.services) {
-			return nil, ErrUnknownService
-		}
-		return d.services[service](clientAddr, request)
+func (h GenericHandler[T, U]) Handle(clientAddr string, request Request) (response *Response, err error) {
+	reqHeaders, ok := request.Headers.(T)
+	if !ok {
+		return nil, ErrInvalidHeadersType
 	}
+	resp, err := h(GenericRequest[T]{
+		Addr:    clientAddr,
+		Service: request.Service,
+		Headers: reqHeaders,
+		Body:    request.Body,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Response{
+		Headers: resp.Headers,
+		Body:    resp.Body,
+	}, nil
+}
+
+func (d *Dispatcher) Handle(clientAddr string, request Request) (response *Response, err error) {
+	service := request.Service
+	if int(service) >= len(d.services) {
+		return nil, ErrUnknownService
+	}
+	return d.services[service].Handle(clientAddr, request)
 }

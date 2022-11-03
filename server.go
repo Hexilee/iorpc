@@ -37,6 +37,10 @@ type Response struct {
 // Hint: use Dispatcher for HandlerFunc construction.
 type HandlerFunc func(clientAddr string, request Request) (response *Response, err error)
 
+type Handler interface {
+	Handle(clientAddr string, request Request) (response *Response, err error)
+}
+
 // Server implements RPC server.
 //
 // Default server settings are optimized for high load, so don't override
@@ -60,7 +64,7 @@ type Server struct {
 	// The function must process the request and return the corresponding response.
 	//
 	// Hint: use Dispatcher for HandlerFunc construction.
-	Handler HandlerFunc
+	Handler Handler
 
 	// The maximum number of concurrent rpc calls the server may perform.
 	// Default is DefaultConcurrency.
@@ -199,6 +203,10 @@ func (s *Server) Serve() error {
 	}
 	s.stopWg.Wait()
 	return nil
+}
+
+func (h HandlerFunc) Handle(clientAddr string, request Request) (response *Response, err error) {
+	return h(clientAddr, request)
 }
 
 func serverHandler(s *Server, workersCh chan struct{}) {
@@ -427,7 +435,7 @@ func serveRequest(s *Server, responsesChan chan<- *serverMessage, stopChan <-cha
 	<-workersCh
 }
 
-func callHandlerWithRecover(logErrorFunc LoggerFunc, handler HandlerFunc, clientAddr, serverAddr string, request Request) (response *Response, errStr string) {
+func callHandlerWithRecover(logErrorFunc LoggerFunc, handler Handler, clientAddr, serverAddr string, request Request) (response *Response, errStr string) {
 	defer func() {
 		if x := recover(); x != nil {
 			stackTrace := make([]byte, 1<<20)
@@ -436,7 +444,7 @@ func callHandlerWithRecover(logErrorFunc LoggerFunc, handler HandlerFunc, client
 			logErrorFunc("gorpc.Server: [%s]->[%s]. %s", clientAddr, serverAddr, errStr)
 		}
 	}()
-	response, err := handler(clientAddr, request)
+	response, err := handler.Handle(clientAddr, request)
 	if err != nil {
 		return nil, err.Error()
 	}
